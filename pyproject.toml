@@ -10,6 +10,7 @@ name = "mummy-maze-parser"
 version = "0.1.0"
 description = "Parser for Mummy Maze Deluxe .dat level files"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
 dependencies = []
 
