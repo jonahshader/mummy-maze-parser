@@ -37,6 +37,7 @@ Flip flag determines mummy behavior and coordinate transform:
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 # Wall flag bits (matching game's internal representation)
@@ -44,6 +45,22 @@ WALL_WEST = 0x01
 WALL_EAST = 0x02
 WALL_SOUTH = 0x04
 WALL_NORTH = 0x08
+
+
+class EntityType(Enum):
+  PLAYER = "player"
+  MUMMY = "mummy"
+  SCORPION = "scorpion"
+  TRAP = "trap"
+  KEY = "key"
+  GATE = "gate"
+
+
+@dataclass
+class Entity:
+  type: EntityType
+  col: int
+  row: int
 
 
 @dataclass
@@ -64,7 +81,7 @@ class SubLevel:
   cells: list[list[int]]
   exit_side: str
   exit_pos: int
-  entities: dict[str, tuple[int, int]]
+  entities: list[Entity]
   flip: bool
 
 
@@ -211,7 +228,7 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
     cells[exit_pos][N - 1] ^= WALL_EAST
 
   # --- Entities ---
-  def read_entity() -> tuple[int, int]:
+  def read_pos() -> tuple[int, int]:
     nonlocal pos
     col, row = _decode_pos(data[pos])
     pos += 1
@@ -219,26 +236,29 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
       return (N - 1 - row, col)
     return (col, row)
 
-  entities: dict[str, tuple[int, int]] = {
-    "player": read_entity(),
-    "mummy1": read_entity(),
-  }
+  entities: list[Entity] = []
 
-  if header.mummy_count > 1:
-    entities["mummy2"] = read_entity()
+  col, row = read_pos()
+  entities.append(Entity(EntityType.PLAYER, col, row))
+
+  for _ in range(header.mummy_count):
+    col, row = read_pos()
+    entities.append(Entity(EntityType.MUMMY, col, row))
 
   if header.key_gate > 0:
-    entities["key"] = read_entity()
-    entities["gate"] = read_entity()
+    col, row = read_pos()
+    entities.append(Entity(EntityType.KEY, col, row))
+    col, row = read_pos()
+    entities.append(Entity(EntityType.GATE, col, row))
 
   # File stores scorpion bytes before trap bytes
-  for t in range(header.scorpion):
-    key = f"scorpion{t + 1}" if header.scorpion > 1 else "scorpion"
-    entities[key] = read_entity()
+  for _ in range(header.scorpion):
+    col, row = read_pos()
+    entities.append(Entity(EntityType.SCORPION, col, row))
 
-  for t in range(header.trap_count):
-    key = f"trap{t + 1}" if header.trap_count > 1 else "trap"
-    entities[key] = read_entity()
+  for _ in range(header.trap_count):
+    col, row = read_pos()
+    entities.append(Entity(EntityType.TRAP, col, row))
 
   return SubLevel(
     cells=cells,
@@ -249,10 +269,19 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
   )
 
 
+_ENTITY_MARKERS = {
+  EntityType.PLAYER: "P",
+  EntityType.MUMMY: "M",
+  EntityType.SCORPION: "S",
+  EntityType.TRAP: "T",
+  EntityType.KEY: "K",
+  EntityType.GATE: "G",
+}
+
+
 def render_maze(level: SubLevel, grid_size: int) -> str:
   """Render maze as ASCII art with entities."""
   cells = level.cells
-  entities = level.entities
   N = grid_size
   H = 2 * N + 1
   W = 2 * N + 1
@@ -284,23 +313,10 @@ def render_maze(level: SubLevel, grid_size: int) -> str:
   elif side == "E":
     grid[epos * 2 + 1][N * 2] = " "
 
-  markers = {
-    "player": "P",
-    "mummy1": "M",
-    "mummy2": "M",
-    "scorpion": "S",
-    "scorpion1": "S",
-    "scorpion2": "S",
-    "trap": "T",
-    "trap1": "T",
-    "trap2": "T",
-    "key": "K",
-    "gate": "G",
-  }
-  for name, (col, row) in entities.items():
-    ch = markers.get(name, "?")
-    if 0 <= row < N and 0 <= col < N:
-      grid[row * 2 + 1][col * 2 + 1] = ch
+  for ent in level.entities:
+    ch = _ENTITY_MARKERS.get(ent.type, "?")
+    if 0 <= ent.row < N and 0 <= ent.col < N:
+      grid[ent.row * 2 + 1][ent.col * 2 + 1] = ch
 
   return "\n".join("".join(row) for row in grid)
 

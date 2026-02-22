@@ -2,7 +2,6 @@
 
 import argparse
 import webbrowser
-from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,11 +9,23 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .match import find_matches
+from .parser import Entity, EntityType
 
 app = FastAPI()
 
 # Set by main() before server starts
 _dat_dir: Path = Path()
+
+# Map JS entity keys to EntityType
+_KEY_TO_TYPE = {
+  "player": EntityType.PLAYER,
+  "mummy1": EntityType.MUMMY,
+  "mummy2": EntityType.MUMMY,
+  "scorpion": EntityType.SCORPION,
+  "trap": EntityType.TRAP,
+  "key": EntityType.KEY,
+  "gate": EntityType.GATE,
+}
 
 
 class MatchRequest(BaseModel):
@@ -22,6 +33,29 @@ class MatchRequest(BaseModel):
   entities: dict[str, list[int]]
   red: bool
   grid_size: int
+
+
+def _serialize_result(r: object) -> dict[str, object]:
+  """Serialize a MatchResult to a JSON-compatible dict."""
+  from .match import MatchResult
+
+  assert isinstance(r, MatchResult)
+  return {
+    "file_index": r.file_index,
+    "sublevel_index": r.sublevel_index,
+    "wall_score": r.wall_score,
+    "wall_total": r.wall_total,
+    "entity_score": r.entity_score,
+    "entity_total": r.entity_total,
+    "transform": r.transform,
+    "flip": r.flip,
+    "ascii_render": r.ascii_render,
+    "exit_side": r.exit_side,
+    "exit_pos": r.exit_pos,
+    "entities": [
+      {"type": e.type.value, "col": e.col, "row": e.row} for e in r.entities
+    ],
+  }
 
 
 @app.get("/")
@@ -32,15 +66,18 @@ def index() -> FileResponse:
 
 @app.post("/match")
 def match(req: MatchRequest) -> list[dict[str, object]]:
-  # Convert entity positions from lists to tuples
-  entities = {k: (v[0], v[1]) for k, v in req.entities.items()}
+  entities = [
+    Entity(_KEY_TO_TYPE[k], v[0], v[1])
+    for k, v in req.entities.items()
+    if k in _KEY_TO_TYPE
+  ]
   results = find_matches(
     wall_flags=req.wall_flags,
     entities=entities,
     grid_size=req.grid_size,
     dat_dir=_dat_dir,
   )
-  return [asdict(r) for r in results]
+  return [_serialize_result(r) for r in results]
 
 
 def main() -> None:
@@ -74,7 +111,6 @@ def main() -> None:
   import uvicorn
 
   if not args.no_browser:
-    # Open browser after a short delay (uvicorn will be running by then)
     import threading
 
     threading.Timer(

@@ -8,6 +8,8 @@ from .parser import (
   WALL_NORTH,
   WALL_SOUTH,
   WALL_WEST,
+  Entity,
+  EntityType,
   SubLevel,
   parse_file,
   render_maze,
@@ -29,7 +31,7 @@ class MatchResult:
   ascii_render: str
   exit_side: str
   exit_pos: int
-  entities: dict[str, tuple[int, int]]
+  entities: list[Entity]
 
 
 def rotate90(grid: Grid, n: int) -> Grid:
@@ -88,41 +90,31 @@ def all_transforms(flat: list[int], n: int) -> list[tuple[str, list[int]]]:
   return results
 
 
+def _positions_of(entities: list[Entity], etype: EntityType) -> set[tuple[int, int]]:
+  """Get the set of (col, row) positions for a given entity type."""
+  return {(e.col, e.row) for e in entities if e.type == etype}
+
+
 def match_entities(
-  parsed_ents: dict[str, tuple[int, int]],
-  target_ents: dict[str, tuple[int, int]],
+  parsed: list[Entity],
+  target: list[Entity],
 ) -> tuple[int, int]:
-  """Score entity matches. Mummies matched by position set, not order."""
+  """Score entity matches. Entities of the same type matched by position set."""
   score = 0
   total = 0
 
-  if "player" in target_ents:
-    total += 1
-    if parsed_ents.get("player") == target_ents["player"]:
-      score += 1
-
-  target_mummies = {v for k, v in target_ents.items() if "mummy" in k}
-  parsed_mummies = {v for k, v in parsed_ents.items() if "mummy" in k}
-  total += len(target_mummies)
-  score += len(target_mummies & parsed_mummies)
-
-  for key in ("scorpion", "key"):
-    if key in target_ents:
-      total += 1
-      if parsed_ents.get(key) == target_ents[key]:
-        score += 1
-
-  target_traps = {v for k, v in target_ents.items() if "trap" in k}
-  parsed_traps = {v for k, v in parsed_ents.items() if "trap" in k}
-  total += len(target_traps)
-  score += len(target_traps & parsed_traps)
+  for etype in EntityType:
+    parsed_positions = _positions_of(parsed, etype)
+    target_positions = _positions_of(target, etype)
+    total += len(target_positions)
+    score += len(target_positions & parsed_positions)
 
   return score, total
 
 
 def find_matches(
   wall_flags: list[int],
-  entities: dict[str, tuple[int, int]],
+  entities: list[Entity],
   grid_size: int,
   dat_dir: Path,
   top: int = 5,

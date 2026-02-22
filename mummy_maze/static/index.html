@@ -399,8 +399,8 @@ async function exportAndMatch() {
       out += `entities=${r.entity_score}/${r.entity_total}, `;
       out += `transform=${r.transform}, type=${flipStr}\n`;
       out += `  Exit: ${r.exit_side}${r.exit_pos}\n`;
-      for (const [name, pos] of Object.entries(r.entities)) {
-        out += `  ${name}: (${pos[0]}, ${pos[1]})\n`;
+      for (const e of r.entities) {
+        out += `  ${e.type}: (${e.col}, ${e.row})\n`;
       }
       out += r.ascii_render.split('\n').map(line => '  ' + line).join('\n');
       out += '\n\n';

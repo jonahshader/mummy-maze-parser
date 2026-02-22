@@ -83,8 +83,7 @@ def main() -> None:
 
     for i in indices:
       level = sublevels[i]
-      ents = level.entities
-      ent_parts = [f"{name}=({col},{row})" for name, (col, row) in ents.items()]
+      ent_parts = [f"{e.type.value}=({e.col},{e.row})" for e in level.entities]
       print()
       print(f"  {'=' * 50}")
       print(f"  Sub-level {i}  |  Exit: {level.exit_side}{level.exit_pos}")
