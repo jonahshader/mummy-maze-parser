@@ -34,17 +34,25 @@ Flip flag determines mummy behavior and coordinate transform:
   flip=False (white mummies, horizontal-first): NW-SE transpose on walls
   flip=True  (red mummies, vertical-first): horizontal mirror on walls,
              entity coords transformed as (col, row) -> (N-1-row, col)
+
+Walls are stored as two edge arrays:
+  h_walls[r][c] — horizontal wall on top edge of cell (r, c).
+                   Shape: (N+1) x N. Row 0 = north border, row N = south border.
+  v_walls[r][c] — vertical wall on left edge of cell (r, c).
+                   Shape: N x (N+1). Col 0 = west border, col N = east border.
+
+Movement checks:
+  North from (r, c): not h_walls[r][c]
+  South from (r, c): not h_walls[r+1][c]
+  West from (r, c):  not v_walls[r][c]
+  East from (r, c):  not v_walls[r][c+1]
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-# Wall flag bits (matching game's internal representation)
-WALL_WEST = 0x01
-WALL_EAST = 0x02
-WALL_SOUTH = 0x04
-WALL_NORTH = 0x08
+Grid = list[list[bool]]
 
 
 class EntityType(Enum):
@@ -78,7 +86,8 @@ class Header:
 
 @dataclass
 class SubLevel:
-  cells: list[list[int]]
+  h_walls: Grid
+  v_walls: Grid
   exit_side: str
   exit_pos: int
   entities: list[Entity]
@@ -126,21 +135,24 @@ def _decode_pos(b: int) -> tuple[int, int]:
 
 def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
   """Parse one sub-level from the data stream at the given offset."""
-  gs = header.grid_size
-  N = gs
+  N = header.grid_size
   pos = offset
 
-  # Cell wall flags: cells[row][col]
-  cells = [[0] * N for _ in range(N)]
+  # Edge arrays (pre-transform)
+  # h_walls: (N+1) rows x N cols — horizontal edges
+  h_walls: Grid = [[False] * N for _ in range(N + 1)]
+  # v_walls: N rows x (N+1) cols — vertical edges
+  v_walls: Grid = [[False] * (N + 1) for _ in range(N)]
 
   # Set border walls
   for i in range(N):
-    cells[0][i] |= WALL_NORTH
-    cells[N - 1][i] |= WALL_SOUTH
-    cells[i][0] |= WALL_WEST
-    cells[i][N - 1] |= WALL_EAST
+    h_walls[0][i] = True  # north border
+    h_walls[N][i] = True  # south border
+    v_walls[i][0] = True  # west border
+    v_walls[i][N] = True  # east border
 
   # --- Horizontal walls (as stored in file) ---
+  # Each bit indicates a horizontal wall on the top edge of a cell.
   for col in range(N):
     wall_bits = data[pos]
     pos += 1
@@ -149,11 +161,10 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
       pos += 1
     for row in range(N):
       if wall_bits & (1 << row):
-        cells[row][col] |= WALL_NORTH
-        if row > 0:
-          cells[row - 1][col] |= WALL_SOUTH
+        h_walls[row][col] = True
 
   # --- Vertical walls (as stored in file) ---
+  # Each bit indicates a vertical wall on the left edge of a cell.
   for slot in range(N):
     wall_bits = data[pos]
     pos += 1
@@ -162,46 +173,36 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
       pos += 1
     for row in range(N):
       if wall_bits & (1 << row):
-        cells[row][slot] |= WALL_WEST
-        if slot > 0:
-          cells[row][slot - 1] |= WALL_EAST
+        v_walls[row][slot] = True
 
   # --- Transform walls based on flip flag ---
   flip = header.flip
   if not flip:
     # flip=False (white mummies): NW-SE transpose
-    transposed = [[0] * N for _ in range(N)]
-    for r in range(N):
+    # Transpose swaps h_walls <-> v_walls and transposes each array.
+    new_h: Grid = [[False] * N for _ in range(N + 1)]
+    new_v: Grid = [[False] * (N + 1) for _ in range(N)]
+    for r in range(N + 1):
       for c in range(N):
-        v = cells[r][c]
-        tv = 0
-        if v & WALL_NORTH:
-          tv |= WALL_WEST
-        if v & WALL_SOUTH:
-          tv |= WALL_EAST
-        if v & WALL_WEST:
-          tv |= WALL_NORTH
-        if v & WALL_EAST:
-          tv |= WALL_SOUTH
-        transposed[c][r] = tv
-    cells = transposed
+        new_v[c][r] = h_walls[r][c]
+    for r in range(N):
+      for c in range(N + 1):
+        new_h[c][r] = v_walls[r][c]
+    h_walls = new_h
+    v_walls = new_v
   else:
     # flip=True (red mummies): horizontal flip (mirror left-right)
-    flipped = [[0] * N for _ in range(N)]
-    for r in range(N):
+    # Reverse columns of h_walls, reverse columns of v_walls.
+    new_h = [[False] * N for _ in range(N + 1)]
+    new_v = [[False] * (N + 1) for _ in range(N)]
+    for r in range(N + 1):
       for c in range(N):
-        v = cells[r][c]
-        fv = 0
-        if v & WALL_NORTH:
-          fv |= WALL_NORTH
-        if v & WALL_SOUTH:
-          fv |= WALL_SOUTH
-        if v & WALL_EAST:
-          fv |= WALL_WEST
-        if v & WALL_WEST:
-          fv |= WALL_EAST
-        flipped[r][N - 1 - c] = fv
-    cells = flipped
+        new_h[r][c] = h_walls[r][N - 1 - c]
+    for r in range(N):
+      for c in range(N + 1):
+        new_v[r][c] = v_walls[r][N - c]
+    h_walls = new_h
+    v_walls = new_v
 
   # --- Exit opening ---
   exit_b = data[pos]
@@ -218,14 +219,14 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
       exit_pos = N - 1 - exit_pos
 
   # Toggle border wall to create exit passage
-  if exit_side == "W":
-    cells[exit_pos][0] ^= WALL_WEST
-  elif exit_side == "N":
-    cells[0][exit_pos] ^= WALL_NORTH
+  if exit_side == "N":
+    h_walls[0][exit_pos] = not h_walls[0][exit_pos]
   elif exit_side == "S":
-    cells[N - 1][exit_pos] ^= WALL_SOUTH
+    h_walls[N][exit_pos] = not h_walls[N][exit_pos]
+  elif exit_side == "W":
+    v_walls[exit_pos][0] = not v_walls[exit_pos][0]
   elif exit_side == "E":
-    cells[exit_pos][N - 1] ^= WALL_EAST
+    v_walls[exit_pos][N] = not v_walls[exit_pos][N]
 
   # --- Entities ---
   def read_pos() -> tuple[int, int]:
@@ -261,7 +262,8 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
     entities.append(Entity(EntityType.TRAP, col, row))
 
   return SubLevel(
-    cells=cells,
+    h_walls=h_walls,
+    v_walls=v_walls,
     exit_side=exit_side,
     exit_pos=exit_pos,
     entities=entities,
@@ -281,38 +283,29 @@ _ENTITY_MARKERS = {
 
 def render_maze(level: SubLevel, grid_size: int) -> str:
   """Render maze as ASCII art with entities."""
-  cells = level.cells
   N = grid_size
   H = 2 * N + 1
   W = 2 * N + 1
   grid = [[" "] * W for _ in range(H)]
 
+  # Corner intersections
   for r in range(N + 1):
     for c in range(N + 1):
       grid[r * 2][c * 2] = "+"
 
-  for r in range(N):
+  # Horizontal walls (top edge of each cell + bottom border)
+  for r in range(N + 1):
     for c in range(N):
-      if cells[r][c] & WALL_NORTH:
+      if level.h_walls[r][c]:
         grid[r * 2][c * 2 + 1] = "-"
-      if cells[r][c] & WALL_SOUTH:
-        grid[(r + 1) * 2][c * 2 + 1] = "-"
-      if cells[r][c] & WALL_WEST:
+
+  # Vertical walls (left edge of each cell + right border)
+  for r in range(N):
+    for c in range(N + 1):
+      if level.v_walls[r][c]:
         grid[r * 2 + 1][c * 2] = "|"
-      if cells[r][c] & WALL_EAST:
-        grid[r * 2 + 1][(c + 1) * 2] = "|"
 
-  side = level.exit_side
-  epos = level.exit_pos
-  if side == "N":
-    grid[0][epos * 2 + 1] = " "
-  elif side == "S":
-    grid[N * 2][epos * 2 + 1] = " "
-  elif side == "W":
-    grid[epos * 2 + 1][0] = " "
-  elif side == "E":
-    grid[epos * 2 + 1][N * 2] = " "
-
+  # Entities
   for ent in level.entities:
     ch = _ENTITY_MARKERS.get(ent.type, "?")
     if 0 <= ent.row < N and 0 <= ent.col < N:

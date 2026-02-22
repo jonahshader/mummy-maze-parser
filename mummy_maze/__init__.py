@@ -2,12 +2,9 @@
 
 from .match import MatchResult, find_matches
 from .parser import (
-  WALL_EAST,
-  WALL_NORTH,
-  WALL_SOUTH,
-  WALL_WEST,
   Entity,
   EntityType,
+  Grid,
   Header,
   ParsedFile,
   SubLevel,
@@ -18,12 +15,9 @@ from .parser import (
 )
 
 __all__ = [
-  "WALL_EAST",
-  "WALL_NORTH",
-  "WALL_SOUTH",
-  "WALL_WEST",
   "Entity",
   "EntityType",
+  "Grid",
   "Header",
   "MatchResult",
   "ParsedFile",

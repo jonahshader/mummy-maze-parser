@@ -36,11 +36,16 @@ for level in parsed.sublevels:
 
 - **`ParsedFile`** — header + list of sub-levels
 - **`Header`** — grid size, flip flag, mummy count, key/gate, traps, scorpion
-- **`SubLevel`** — wall grid (`cells[row][col]` as bitmasks), exit side/position, entity list, flip flag
+- **`SubLevel`** — wall edge arrays, exit side/position, entity list, flip flag
 - **`Entity`** — type (`EntityType` enum), col, row
 - **`EntityType`** — `PLAYER`, `MUMMY`, `SCORPION`, `TRAP`, `KEY`, `GATE`
 
-Wall flags per cell are bitmasks: `WALL_NORTH` (0x08), `WALL_SOUTH` (0x04), `WALL_EAST` (0x02), `WALL_WEST` (0x01).
+Walls are stored as two edge arrays (no redundancy):
+
+- `h_walls[r][c]` — horizontal wall on top edge of cell `(r, c)`. Shape: `(N+1) × N`.
+- `v_walls[r][c]` — vertical wall on left edge of cell `(r, c)`. Shape: `N × (N+1)`.
+
+Movement checks: north = `not h_walls[r][c]`, south = `not h_walls[r+1][c]`, west = `not v_walls[r][c]`, east = `not v_walls[r][c+1]`.
 
 ### CLI
 
