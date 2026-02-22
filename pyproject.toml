@@ -13,8 +13,12 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+editor = ["fastapi", "uvicorn"]
+
 [project.scripts]
 mummy-maze-parser = "mummy_maze.cli:main"
+mummy-maze-editor = "mummy_maze.editor:main"
 
 [dependency-groups]
 dev = [

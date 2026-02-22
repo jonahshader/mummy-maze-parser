@@ -9,12 +9,17 @@
   .controls button { padding: 6px 14px; cursor: pointer; font-family: monospace; font-size: 14px; }
   .controls select, .controls input { font-family: monospace; font-size: 14px; padding: 4px; }
   canvas { cursor: crosshair; border: 1px solid #555; display: block; margin-bottom: 15px; }
-  #output { background: #1a1a1a; padding: 10px; white-space: pre; font-size: 13px; max-height: 400px; overflow-y: auto; }
+  #output { background: #1a1a1a; padding: 10px; white-space: pre; font-size: 13px; max-height: 600px; overflow-y: auto; }
   .entity-palette { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .entity-btn { padding: 4px 10px; cursor: pointer; font-family: monospace; border: 2px solid #555; background: #333; color: #eee; }
   .entity-btn.active { border-color: #ff0; background: #555; }
   .entity-btn.wall-mode { border-color: #0af; background: #555; }
   label { font-size: 14px; }
+  .match-result { margin-bottom: 20px; border-bottom: 1px solid #444; padding-bottom: 15px; }
+  .match-header { color: #0f0; font-weight: bold; margin-bottom: 5px; }
+  .match-details { color: #aaa; margin-bottom: 5px; }
+  .match-ascii { color: #ccc; }
+  .searching { color: #ff0; }
 </style>
 </head>
 <body>
@@ -27,7 +32,7 @@
     <option value="10">10x10</option>
   </select></label>
   <button onclick="clearAll()">Clear All</button>
-  <button onclick="exportData()">Export &amp; Match</button>
+  <button onclick="exportAndMatch()" id="matchBtn">Export &amp; Match</button>
 </div>
 
 <div class="controls entity-palette">
@@ -295,11 +300,9 @@ canvas.addEventListener('click', (e) => {
   }
 });
 
-function exportData() {
-  // Build cell wall flags matching parser format
+function buildWallFlags() {
   const WALL_N = 0x08, WALL_S = 0x04, WALL_E = 0x02, WALL_W = 0x01;
   let cells = Array.from({length: N}, () => Array(N).fill(0));
-
   for (let r = 0; r < N; r++) {
     for (let c = 0; c < N; c++) {
       if (hWalls[r][c]) cells[r][c] |= WALL_N;
@@ -308,8 +311,13 @@ function exportData() {
       if (vWalls[r][c+1]) cells[r][c] |= WALL_E;
     }
   }
+  let flat = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) flat.push(cells[r][c]);
+  return {cells, flat};
+}
 
-  // ASCII rendering
+function buildAscii(cells) {
+  const WALL_N = 0x08, WALL_S = 0x04, WALL_E = 0x02, WALL_W = 0x01;
   let H = 2*N+1, W = 2*N+1;
   let grid = Array.from({length: H}, () => Array(W).fill(' '));
   for (let r = 0; r <= N; r++) for (let c = 0; c <= N; c++) grid[r*2][c*2] = '+';
@@ -335,31 +343,73 @@ function exportData() {
     if (exitInfo.side === 'W') grid[exitInfo.pos*2+1][0] = ' ';
     if (exitInfo.side === 'E') grid[exitInfo.pos*2+1][N*2] = ' ';
   }
-  let ascii = grid.map(row => row.join('')).join('\n');
+  return grid.map(row => row.join('')).join('\n');
+}
 
-  // Wall flags as flat array (for matching)
-  let wallFlat = [];
-  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) wallFlat.push(cells[r][c]);
+async function exportAndMatch() {
+  const {cells, flat} = buildWallFlags();
+  const ascii = buildAscii(cells);
+  const red = document.getElementById('redMode').checked;
+  const output = document.getElementById('output');
 
-  let out = `Grid: ${N}x${N}\n`;
-  out += `Red: ${redExport}\n`;
-  out += `Exit: ${exitInfo ? exitInfo.side + exitInfo.pos : 'none'}\n`;
-  out += `Gate: ${gateInfo ? JSON.stringify(gateInfo) : 'none'}\n`;
+  // Show current maze export
+  let out = `Grid: ${N}x${N}  |  ${red ? 'Red' : 'White'} mummies\n`;
+  if (exitInfo) out += `Exit: ${exitInfo.side}${exitInfo.pos}\n`;
   for (const [name, [c, r]] of Object.entries(entities)) {
     out += `${name}: col=${c} row=${r}\n`;
   }
-  out += `\n${ascii}\n`;
-  out += `\nWall flags (row-major, hex):\n`;
-  for (let r = 0; r < N; r++) {
-    out += '  ' + wallFlat.slice(r*N, (r+1)*N).map(v => v.toString(16).padStart(2, '0')).join(' ') + '\n';
-  }
-  out += `\nPaste into match script:\nwall_flags = [${wallFlat.join(',')}]\n`;
-  out += `red = ${redExport ? 'True' : 'False'}\n`;
-  out += `exit_info = ${exitInfo ? JSON.stringify(exitInfo) : 'None'}\n`;
-  out += `gate_info = ${gateInfo ? JSON.stringify(gateInfo) : 'None'}\n`;
-  out += `entities = ${JSON.stringify(entities)}\n`;
+  out += `\n${ascii}\n\n`;
+  out += `Searching .dat files...\n`;
+  output.textContent = out;
 
-  document.getElementById('output').textContent = out;
+  // Call the match endpoint
+  try {
+    const resp = await fetch('/match', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        wall_flags: flat,
+        entities: entities,
+        red: red,
+        grid_size: N,
+      }),
+    });
+
+    if (!resp.ok) {
+      output.textContent = out + `\nError: ${resp.status} ${resp.statusText}`;
+      return;
+    }
+
+    const results = await resp.json();
+
+    if (results.length === 0) {
+      output.textContent = out + `\nNo matches found.`;
+      return;
+    }
+
+    // Clear "Searching..." and show results
+    out = out.replace('Searching .dat files...\n', '');
+    out += `--- ${results.length} Match${results.length > 1 ? 'es' : ''} ---\n\n`;
+
+    for (const r of results) {
+      const pct = Math.floor(r.wall_score * 100 / r.wall_total);
+      const flipStr = r.flip ? 'red' : 'white';
+      out += `B-${r.file_index} sub-${r.sublevel_index}: `;
+      out += `${r.wall_score}/${r.wall_total} walls (${pct}%), `;
+      out += `entities=${r.entity_score}/${r.entity_total}, `;
+      out += `transform=${r.transform}, type=${flipStr}\n`;
+      out += `  Exit: ${r.exit_side}${r.exit_pos}\n`;
+      for (const [name, pos] of Object.entries(r.entities)) {
+        out += `  ${name}: (${pos[0]}, ${pos[1]})\n`;
+      }
+      out += r.ascii_render.split('\n').map(line => '  ' + line).join('\n');
+      out += '\n\n';
+    }
+
+    output.textContent = out;
+  } catch (err) {
+    output.textContent = out + `\nFetch error: ${err.message}`;
+  }
 }
 
 document.getElementById('gridSize').addEventListener('change', init);
