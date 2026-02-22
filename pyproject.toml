@@ -1,0 +1,10 @@
+[project]
+name = "mummy-maze-parser"
+version = "0.1.0"
+description = "Parser for Mummy Maze Deluxe .dat level files"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+mummy-maze-parser = "mummy_maze.cli:main"

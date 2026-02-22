@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mummy Maze Wall Editor</title>
+<style>
+  body { font-family: monospace; background: #2a2a2a; color: #eee; margin: 20px; }
+  .controls { margin-bottom: 15px; display: flex; gap: 15px; align-items: center; }
+  .controls button { padding: 6px 14px; cursor: pointer; font-family: monospace; font-size: 14px; }
+  .controls select, .controls input { font-family: monospace; font-size: 14px; padding: 4px; }
+  canvas { cursor: crosshair; border: 1px solid #555; display: block; margin-bottom: 15px; }
+  #output { background: #1a1a1a; padding: 10px; white-space: pre; font-size: 13px; max-height: 400px; overflow-y: auto; }
+  .entity-palette { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .entity-btn { padding: 4px 10px; cursor: pointer; font-family: monospace; border: 2px solid #555; background: #333; color: #eee; }
+  .entity-btn.active { border-color: #ff0; background: #555; }
+  .entity-btn.wall-mode { border-color: #0af; background: #555; }
+  label { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h2>Mummy Maze Wall Editor</h2>
+<div class="controls">
+  <label>Grid: <select id="gridSize">
+    <option value="6" selected>6x6</option>
+    <option value="8">8x8</option>
+    <option value="10">10x10</option>
+  </select></label>
+  <button onclick="clearAll()">Clear All</button>
+  <button onclick="exportData()">Export &amp; Match</button>
+</div>
+
+<div class="controls entity-palette">
+  <span>Mode:</span>
+  <button class="entity-btn wall-mode" id="btn-wall" onclick="setMode('wall')">Walls (click edges)</button>
+  <button class="entity-btn" id="btn-player" onclick="setMode('player')">P Player</button>
+  <button class="entity-btn" id="btn-mummy1" onclick="setMode('mummy1')">Mummy 1</button>
+  <button class="entity-btn" id="btn-mummy2" onclick="setMode('mummy2')">Mummy 2</button>
+  <button class="entity-btn" id="btn-scorpion" onclick="setMode('scorpion')">Scorpion</button>
+  <button class="entity-btn" id="btn-trap" onclick="setMode('trap')">T Trap</button>
+  <button class="entity-btn" id="btn-key" onclick="setMode('key')">K Key</button>
+  <button class="entity-btn" id="btn-gate" onclick="setMode('gate')">G Gate</button>
+  <button class="entity-btn" id="btn-exit" onclick="setMode('exit')">X Exit (click border)</button>
+  <label style="margin-left:10px"><input type="checkbox" id="redMode" onchange="draw()"> Red mummies/scorpion</label>
+</div>
+
+<canvas id="canvas"></canvas>
+<div id="output"></div>
+
+<script>
+const CELL = 60;
+const WALL_ZONE = 10;
+
+let N = 6;
+// hWalls[r][c] = true means wall between row r-1 and row r at column c
+// (wall on north side of cell [r][c]), r=0..N, c=0..N-1
+// r=0 = top border, r=N = bottom border
+let hWalls, vWalls;
+let entities = {};
+let exitInfo = null; // {side, pos}
+let gateInfo = null; // {type:'h'|'v', r, c} - placed on an edge like a wall
+let mode = 'wall';
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function init() {
+  N = parseInt(document.getElementById('gridSize').value);
+  hWalls = Array.from({length: N+1}, () => Array(N).fill(false));
+  vWalls = Array.from({length: N}, () => Array(N+1).fill(false));
+  // Set border walls
+  for (let c = 0; c < N; c++) { hWalls[0][c] = true; hWalls[N][c] = true; }
+  for (let r = 0; r < N; r++) { vWalls[r][0] = true; vWalls[r][N] = true; }
+  entities = {};
+  exitInfo = null;
+  gateInfo = null;
+  resize();
+  draw();
+}
+
+function resize() {
+  const pad = CELL;
+  canvas.width = N * CELL + pad;
+  canvas.height = N * CELL + pad;
+}
+
+function clearAll() { init(); }
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.entity-btn').forEach(b => {
+    b.classList.remove('active', 'wall-mode');
+  });
+  const btn = document.getElementById('btn-' + m);
+  if (btn) btn.classList.add(m === 'wall' ? 'wall-mode' : 'active');
+}
+
+function draw() {
+  const pad = CELL / 2;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Checkerboard
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#c4a86c' : '#b89a5a';
+      ctx.fillRect(pad + c * CELL, pad + r * CELL, CELL, CELL);
+    }
+  }
+
+  // Grid lines (light)
+  ctx.strokeStyle = '#8a7a5a';
+  ctx.lineWidth = 1;
+  for (let r = 0; r <= N; r++) {
+    ctx.beginPath(); ctx.moveTo(pad, pad + r * CELL); ctx.lineTo(pad + N * CELL, pad + r * CELL); ctx.stroke();
+  }
+  for (let c = 0; c <= N; c++) {
+    ctx.beginPath(); ctx.moveTo(pad + c * CELL, pad); ctx.lineTo(pad + c * CELL, pad + N * CELL); ctx.stroke();
+  }
+
+  // Horizontal walls
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  for (let r = 0; r <= N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (hWalls[r][c]) {
+        ctx.beginPath();
+        ctx.moveTo(pad + c * CELL, pad + r * CELL);
+        ctx.lineTo(pad + (c + 1) * CELL, pad + r * CELL);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Vertical walls
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c <= N; c++) {
+      if (vWalls[r][c]) {
+        ctx.beginPath();
+        ctx.moveTo(pad + c * CELL, pad + r * CELL);
+        ctx.lineTo(pad + c * CELL, pad + (r + 1) * CELL);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Gate marker (on edge)
+  if (gateInfo) {
+    ctx.fillStyle = '#a0f';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    let gx, gy;
+    if (gateInfo.type === 'h') {
+      gx = pad + gateInfo.c * CELL + CELL / 2;
+      gy = pad + gateInfo.r * CELL;
+    } else {
+      gx = pad + gateInfo.c * CELL;
+      gy = pad + gateInfo.r * CELL + CELL / 2;
+    }
+    // Draw a colored bar behind the G
+    ctx.strokeStyle = '#a0f';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    if (gateInfo.type === 'h') {
+      ctx.moveTo(pad + gateInfo.c * CELL, gy);
+      ctx.lineTo(pad + (gateInfo.c + 1) * CELL, gy);
+    } else {
+      ctx.moveTo(gx, pad + gateInfo.r * CELL);
+      ctx.lineTo(gx, pad + (gateInfo.r + 1) * CELL);
+    }
+    ctx.stroke();
+    ctx.fillText('G', gx, gy);
+  }
+
+  // Exit marker
+  if (exitInfo) {
+    ctx.fillStyle = '#0f0';
+    ctx.font = 'bold 20px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    let ex, ey;
+    if (exitInfo.side === 'N') { ex = pad + exitInfo.pos * CELL + CELL/2; ey = pad/2; }
+    else if (exitInfo.side === 'S') { ex = pad + exitInfo.pos * CELL + CELL/2; ey = pad + N * CELL + pad/2; }
+    else if (exitInfo.side === 'W') { ex = pad/2; ey = pad + exitInfo.pos * CELL + CELL/2; }
+    else if (exitInfo.side === 'E') { ex = pad + N * CELL + pad/2; ey = pad + exitInfo.pos * CELL + CELL/2; }
+    ctx.fillText('X', ex, ey);
+  }
+
+  // Entities
+  const red = document.getElementById('redMode').checked;
+  const mummyColor = red ? '#f66' : '#ddd';
+  const mummyLabel = red ? 'R' : 'M';
+  const scorpionColor = red ? '#f44' : '#fa0';
+  const colors = {player:'#fff', mummy1:mummyColor, mummy2:mummyColor, scorpion:scorpionColor, trap:'#888', key:'#ff0', gate:'#a0f'};
+  const labels = {player:'P', mummy1:mummyLabel, mummy2:mummyLabel, scorpion:'S', trap:'T', key:'K', gate:'G'};
+  ctx.font = 'bold 22px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const [name, pos] of Object.entries(entities)) {
+    const x = pad + pos[0] * CELL + CELL / 2;
+    const y = pad + pos[1] * CELL + CELL / 2;
+    ctx.fillStyle = '#0008';
+    ctx.fillRect(pad + pos[0] * CELL + 8, pad + pos[1] * CELL + 8, CELL - 16, CELL - 16);
+    ctx.fillStyle = colors[name] || '#fff';
+    ctx.fillText(labels[name] || '?', x, y);
+  }
+}
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const pad = CELL / 2;
+
+  if (mode === 'wall') {
+    // Check horizontal wall segments
+    for (let r = 0; r <= N; r++) {
+      for (let c = 0; c < N; c++) {
+        const wx = pad + c * CELL + CELL / 2;
+        const wy = pad + r * CELL;
+        if (Math.abs(my - wy) < WALL_ZONE && mx > pad + c * CELL + 5 && mx < pad + (c+1) * CELL - 5) {
+          hWalls[r][c] = !hWalls[r][c];
+          draw(); return;
+        }
+      }
+    }
+    // Check vertical wall segments
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c <= N; c++) {
+        const wx = pad + c * CELL;
+        const wy = pad + r * CELL + CELL / 2;
+        if (Math.abs(mx - wx) < WALL_ZONE && my > pad + r * CELL + 5 && my < pad + (r+1) * CELL - 5) {
+          vWalls[r][c] = !vWalls[r][c];
+          draw(); return;
+        }
+      }
+    }
+  } else if (mode === 'gate') {
+    // Place gate on an edge (like a wall)
+    for (let r = 0; r <= N; r++) {
+      for (let c = 0; c < N; c++) {
+        const wy = pad + r * CELL;
+        if (Math.abs(my - wy) < WALL_ZONE && mx > pad + c * CELL + 5 && mx < pad + (c+1) * CELL - 5) {
+          if (gateInfo && gateInfo.type === 'h' && gateInfo.r === r && gateInfo.c === c) {
+            gateInfo = null;
+          } else {
+            gateInfo = {type: 'h', r, c};
+          }
+          draw(); return;
+        }
+      }
+    }
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c <= N; c++) {
+        const wx = pad + c * CELL;
+        if (Math.abs(mx - wx) < WALL_ZONE && my > pad + r * CELL + 5 && my < pad + (r+1) * CELL - 5) {
+          if (gateInfo && gateInfo.type === 'v' && gateInfo.r === r && gateInfo.c === c) {
+            gateInfo = null;
+          } else {
+            gateInfo = {type: 'v', r, c};
+          }
+          draw(); return;
+        }
+      }
+    }
+  } else if (mode === 'exit') {
+    // Click on border area to place exit
+    const gx = (mx - pad) / CELL;
+    const gy = (my - pad) / CELL;
+    if (gy < 0 && gx >= 0 && gx < N) {
+      exitInfo = {side: 'N', pos: Math.floor(gx)};
+      hWalls[0][Math.floor(gx)] = false;
+    } else if (gy > N && gx >= 0 && gx < N) {
+      exitInfo = {side: 'S', pos: Math.floor(gx)};
+      hWalls[N][Math.floor(gx)] = false;
+    } else if (gx < 0 && gy >= 0 && gy < N) {
+      exitInfo = {side: 'W', pos: Math.floor(gy)};
+      vWalls[Math.floor(gy)][0] = false;
+    } else if (gx > N && gy >= 0 && gy < N) {
+      exitInfo = {side: 'E', pos: Math.floor(gy)};
+      vWalls[Math.floor(gy)][N] = false;
+    }
+    draw();
+  } else {
+    // Place entity in cell
+    const col = Math.floor((mx - pad) / CELL);
+    const row = Math.floor((my - pad) / CELL);
+    if (col >= 0 && col < N && row >= 0 && row < N) {
+      // Remove if already there
+      if (entities[mode] && entities[mode][0] === col && entities[mode][1] === row) {
+        delete entities[mode];
+      } else {
+        entities[mode] = [col, row];
+      }
+      draw();
+    }
+  }
+});
+
+function exportData() {
+  // Build cell wall flags matching parser format
+  const WALL_N = 0x08, WALL_S = 0x04, WALL_E = 0x02, WALL_W = 0x01;
+  let cells = Array.from({length: N}, () => Array(N).fill(0));
+
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (hWalls[r][c]) cells[r][c] |= WALL_N;
+      if (hWalls[r+1][c]) cells[r][c] |= WALL_S;
+      if (vWalls[r][c]) cells[r][c] |= WALL_W;
+      if (vWalls[r][c+1]) cells[r][c] |= WALL_E;
+    }
+  }
+
+  // ASCII rendering
+  let H = 2*N+1, W = 2*N+1;
+  let grid = Array.from({length: H}, () => Array(W).fill(' '));
+  for (let r = 0; r <= N; r++) for (let c = 0; c <= N; c++) grid[r*2][c*2] = '+';
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (cells[r][c] & WALL_N) grid[r*2][c*2+1] = '-';
+    if (cells[r][c] & WALL_S) grid[(r+1)*2][c*2+1] = '-';
+    if (cells[r][c] & WALL_W) grid[r*2+1][c*2] = '|';
+    if (cells[r][c] & WALL_E) grid[r*2+1][(c+1)*2] = '|';
+  }
+  const redExport = document.getElementById('redMode').checked;
+  const mLabel = redExport ? 'R' : 'M';
+  const markers = {player:'P', mummy1:mLabel, mummy2:mLabel, scorpion:'S', trap:'T', key:'K'};
+  for (const [name, [c, r]] of Object.entries(entities)) {
+    grid[r*2+1][c*2+1] = markers[name] || '?';
+  }
+  if (gateInfo) {
+    if (gateInfo.type === 'h') grid[gateInfo.r*2][gateInfo.c*2+1] = 'G';
+    else grid[gateInfo.r*2+1][gateInfo.c*2] = 'G';
+  }
+  if (exitInfo) {
+    if (exitInfo.side === 'N') grid[0][exitInfo.pos*2+1] = ' ';
+    if (exitInfo.side === 'S') grid[N*2][exitInfo.pos*2+1] = ' ';
+    if (exitInfo.side === 'W') grid[exitInfo.pos*2+1][0] = ' ';
+    if (exitInfo.side === 'E') grid[exitInfo.pos*2+1][N*2] = ' ';
+  }
+  let ascii = grid.map(row => row.join('')).join('\n');
+
+  // Wall flags as flat array (for matching)
+  let wallFlat = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) wallFlat.push(cells[r][c]);
+
+  let out = `Grid: ${N}x${N}\n`;
+  out += `Red: ${redExport}\n`;
+  out += `Exit: ${exitInfo ? exitInfo.side + exitInfo.pos : 'none'}\n`;
+  out += `Gate: ${gateInfo ? JSON.stringify(gateInfo) : 'none'}\n`;
+  for (const [name, [c, r]] of Object.entries(entities)) {
+    out += `${name}: col=${c} row=${r}\n`;
+  }
+  out += `\n${ascii}\n`;
+  out += `\nWall flags (row-major, hex):\n`;
+  for (let r = 0; r < N; r++) {
+    out += '  ' + wallFlat.slice(r*N, (r+1)*N).map(v => v.toString(16).padStart(2, '0')).join(' ') + '\n';
+  }
+  out += `\nPaste into match script:\nwall_flags = [${wallFlat.join(',')}]\n`;
+  out += `red = ${redExport ? 'True' : 'False'}\n`;
+  out += `exit_info = ${exitInfo ? JSON.stringify(exitInfo) : 'None'}\n`;
+  out += `gate_info = ${gateInfo ? JSON.stringify(gateInfo) : 'None'}\n`;
+  out += `entities = ${JSON.stringify(entities)}\n`;
+
+  document.getElementById('output').textContent = out;
+}
+
+document.getElementById('gridSize').addEventListener('change', init);
+init();
+</script>
+</body>
+</html>
