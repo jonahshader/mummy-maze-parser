@@ -26,7 +26,7 @@ Sub-level data (variable-size, sequential):
     4. Player position (1 byte): low nibble = col, high nibble = row
     5. Mummy 1 position (1 byte)
     6. Mummy 2 position (1 byte, only if mummy_count > 1)
-    7. Key + Gate positions (2 bytes, only if key_gate > 0)
+    7. Gate + Key positions (2 bytes, only if key_gate > 0)
     8. Scorpion position(s) (scorpion bytes)
     9. Trap position(s) (trap_count bytes)
 
@@ -248,9 +248,9 @@ def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
 
   if header.key_gate > 0:
     col, row = read_pos()
-    entities.append(Entity(EntityType.KEY, col, row))
-    col, row = read_pos()
     entities.append(Entity(EntityType.GATE, col, row))
+    col, row = read_pos()
+    entities.append(Entity(EntityType.KEY, col, row))
 
   # File stores scorpion bytes before trap bytes
   for _ in range(header.scorpion):
@@ -308,7 +308,11 @@ def render_maze(level: SubLevel, grid_size: int) -> str:
   # Entities
   for ent in level.entities:
     ch = _ENTITY_MARKERS.get(ent.type, "?")
-    if 0 <= ent.row < N and 0 <= ent.col < N:
+    if ent.type == EntityType.GATE:
+      # Gate is a wall on the south edge of its cell
+      if 0 <= ent.row < N and 0 <= ent.col < N:
+        grid[(ent.row + 1) * 2][ent.col * 2 + 1] = ch
+    elif 0 <= ent.row < N and 0 <= ent.col < N:
       grid[ent.row * 2 + 1][ent.col * 2 + 1] = ch
 
   return "\n".join("".join(row) for row in grid)

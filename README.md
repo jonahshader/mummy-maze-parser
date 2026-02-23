@@ -45,8 +45,6 @@ Walls are stored as two edge arrays (no redundancy):
 - `h_walls[r][c]` — horizontal wall on top edge of cell `(r, c)`. Shape: `(N+1) × N`.
 - `v_walls[r][c]` — vertical wall on left edge of cell `(r, c)`. Shape: `N × (N+1)`.
 
-Movement checks: north = `not h_walls[r][c]`, south = `not h_walls[r+1][c]`, west = `not v_walls[r][c]`, east = `not v_walls[r][c+1]`.
-
 ### CLI
 
 A CLI is included for inspecting `.dat` files:
