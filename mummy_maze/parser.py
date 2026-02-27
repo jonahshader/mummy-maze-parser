@@ -133,133 +133,183 @@ def _decode_pos(b: int) -> tuple[int, int]:
   return b & 0x0F, (b >> 4) & 0x0F
 
 
+def _read_wall_bits(data: bytes, pos: int, n: int) -> tuple[int, int]:
+  """Read one or two bytes of wall bits depending on grid size."""
+  bits = data[pos]
+  pos += 1
+  if n > 8:
+    bits |= data[pos] << 8
+    pos += 1
+  return bits, pos
+
+
 def parse_sublevel(data: bytes, offset: int, header: Header) -> SubLevel:
-  """Parse one sub-level from the data stream at the given offset."""
+  """Parse one sub-level from the data stream at the given offset.
+
+  Direct port of the C parser (csolver/src/parse.c), which is itself a
+  direct port of the binary's FUN_0040e1d0.  Loads walls into per-cell
+  bitmasks first, then converts to edge arrays.
+  """
   N = header.grid_size
-  pos = offset
-
-  # Edge arrays (pre-transform)
-  # h_walls: (N+1) rows x N cols — horizontal edges
-  h_walls: Grid = [[False] * N for _ in range(N + 1)]
-  # v_walls: N rows x (N+1) cols — vertical edges
-  v_walls: Grid = [[False] * (N + 1) for _ in range(N)]
-
-  # Set border walls
-  for i in range(N):
-    h_walls[0][i] = True  # north border
-    h_walls[N][i] = True  # south border
-    v_walls[i][0] = True  # west border
-    v_walls[i][N] = True  # east border
-
-  # --- Horizontal walls (as stored in file) ---
-  # Each bit indicates a horizontal wall on the top edge of a cell.
-  for col in range(N):
-    wall_bits = data[pos]
-    pos += 1
-    if N > 8:
-      wall_bits |= data[pos] << 8
-      pos += 1
-    for row in range(N):
-      if wall_bits & (1 << row):
-        h_walls[row][col] = True
-
-  # --- Vertical walls (as stored in file) ---
-  # Each bit indicates a vertical wall on the left edge of a cell.
-  for slot in range(N):
-    wall_bits = data[pos]
-    pos += 1
-    if N > 8:
-      wall_bits |= data[pos] << 8
-      pos += 1
-    for row in range(N):
-      if wall_bits & (1 << row):
-        v_walls[row][slot] = True
-
-  # --- Transform walls based on flip flag ---
   flip = header.flip
-  if not flip:
-    # flip=False (white mummies): NW-SE transpose
-    # Transpose swaps h_walls <-> v_walls and transposes each array.
-    new_h: Grid = [[False] * N for _ in range(N + 1)]
-    new_v: Grid = [[False] * (N + 1) for _ in range(N)]
-    for r in range(N + 1):
-      for c in range(N):
-        new_v[c][r] = h_walls[r][c]
-    for r in range(N):
-      for c in range(N + 1):
-        new_h[c][r] = v_walls[r][c]
-    h_walls = new_h
-    v_walls = new_v
-  else:
-    # flip=True (red mummies): horizontal flip (mirror left-right)
-    # Reverse columns of h_walls, reverse columns of v_walls.
-    new_h = [[False] * N for _ in range(N + 1)]
-    new_v = [[False] * (N + 1) for _ in range(N)]
-    for r in range(N + 1):
-      for c in range(N):
-        new_h[r][c] = h_walls[r][N - 1 - c]
-    for r in range(N):
-      for c in range(N + 1):
-        new_v[r][c] = v_walls[r][N - c]
-    h_walls = new_h
-    v_walls = new_v
+  pos = offset
+  _S = 10  # stride, matching binary's walls[col + row * 10]
 
-  # --- Exit opening ---
+  # --- Per-cell bitmask array (C layout: walls[col + row * 10]) ---
+  walls = [0] * (_S * _S)
+
+  # Border walls
+  for col in range(N):
+    for row in range(N):
+      idx = col + row * _S
+      if row == 0:
+        walls[idx] |= 8  # WALL_N
+      if row == N - 1:
+        walls[idx] |= 4  # WALL_S
+      if col == 0:
+        walls[idx] |= 1  # WALL_W
+      if col == N - 1:
+        walls[idx] |= 2  # WALL_E
+
+  # --- Load wall bytes (flip-dependent) ---
+  if not flip:
+    # flip=0: first loop = N/S walls, second loop = W/E walls
+    for col in range(N):
+      bits, pos = _read_wall_bits(data, pos, N)
+      for row in range(N):
+        if bits & (1 << row):
+          walls[col + row * _S] |= 8  # WALL_N
+          if row > 0:
+            walls[col + (row - 1) * _S] |= 4  # WALL_S
+
+    for col in range(N):
+      bits, pos = _read_wall_bits(data, pos, N)
+      for row in range(N):
+        if bits & (1 << row):
+          walls[col + row * _S] |= 1  # WALL_W
+          if col > 0:
+            walls[col - 1 + row * _S] |= 2  # WALL_E
+  else:
+    # flip=1: first loop = W/E walls, second loop = S/N walls
+    for i10 in range(N):
+      bits, pos = _read_wall_bits(data, pos, N)
+      for i8 in range(N):
+        if bits & (1 << i8):
+          idx = i8 + (N - i10) * _S
+          walls[idx - _S] |= 1  # WALL_W
+          if i8 > 0:
+            walls[idx - _S - 1] |= 2  # WALL_E
+
+    for i10 in range(N):
+      bits, pos = _read_wall_bits(data, pos, N)
+      for i8 in range(N):
+        if bits & (1 << i8):
+          idx = i8 + (N - i10) * _S
+          walls[idx - _S] |= 4  # WALL_S
+          if i10 > 0:
+            walls[idx] |= 8  # WALL_N
+
+  # --- Exit (flip-dependent) ---
   exit_b = data[pos]
   pos += 1
-  exit_side_num = exit_b & 0x0F
-  exit_pos = (exit_b >> 4) & 0x0F
+  side = exit_b & 0x0F
+  p = (exit_b >> 4) & 0x0F
+
   if not flip:
-    side_map = {0: "N", 1: "W", 2: "E", 3: "S"}
+    if side == 0:  # West
+      walls[0 + p * _S] |= 0x10
+      walls[0 + p * _S] ^= 1
+      exit_row, exit_col, exit_mask = p, 0, 0x10
+    elif side == 1:  # North
+      walls[p] |= 0x80
+      walls[p] ^= 8
+      exit_row, exit_col, exit_mask = 0, p, 0x80
+    elif side == 2:  # South
+      walls[p + (N - 1) * _S] |= 0x40
+      walls[p + (N - 1) * _S] ^= 4
+      exit_row, exit_col, exit_mask = N - 1, p, 0x40
+    elif side == 3:  # East
+      walls[(N - 1) + p * _S] |= 0x20
+      walls[(N - 1) + p * _S] ^= 2
+      exit_row, exit_col, exit_mask = p, N - 1, 0x20
+    else:
+      exit_row, exit_col, exit_mask = -1, -1, 0
   else:
-    side_map = {0: "W", 1: "N", 2: "S", 3: "E"}
-  exit_side = side_map.get(exit_side_num, "?")
-  if flip:
-    if exit_side in ("N", "S"):
-      exit_pos = N - 1 - exit_pos
+    if side == 0:  # South
+      walls[p + (N - 1) * _S] |= 0x40
+      walls[p + (N - 1) * _S] ^= 4
+      exit_row, exit_col, exit_mask = N - 1, p, 0x40
+    elif side == 1:  # West
+      walls[0 + (N - p - 1) * _S] |= 0x10
+      walls[0 + (N - p - 1) * _S] ^= 1
+      exit_row, exit_col, exit_mask = N - p - 1, 0, 0x10
+    elif side == 2:  # East
+      walls[(N - 1) + (N - 1 - p) * _S] |= 0x20
+      walls[(N - 1) + (N - 1 - p) * _S] ^= 2
+      exit_row, exit_col, exit_mask = N - 1 - p, N - 1, 0x20
+    elif side == 3:  # North
+      walls[p] |= 0x80
+      walls[p] ^= 8
+      exit_row, exit_col, exit_mask = 0, p, 0x80
+    else:
+      exit_row, exit_col, exit_mask = -1, -1, 0
 
-  # Toggle border wall to create exit passage
-  if exit_side == "N":
-    h_walls[0][exit_pos] = not h_walls[0][exit_pos]
-  elif exit_side == "S":
-    h_walls[N][exit_pos] = not h_walls[N][exit_pos]
-  elif exit_side == "W":
-    v_walls[exit_pos][0] = not v_walls[exit_pos][0]
-  elif exit_side == "E":
-    v_walls[exit_pos][N] = not v_walls[exit_pos][N]
+  # --- Convert bitmask to edge arrays ---
+  h_walls: Grid = [[False] * N for _ in range(N + 1)]
+  v_walls: Grid = [[False] * (N + 1) for _ in range(N)]
 
-  # --- Entities ---
-  def read_pos() -> tuple[int, int]:
+  for row in range(N):
+    for col in range(N):
+      w = walls[col + row * _S]
+      if w & 8:  # WALL_N → top edge of (row, col)
+        h_walls[row][col] = True
+      if w & 4:  # WALL_S → bottom edge of (row, col)
+        h_walls[row + 1][col] = True
+      if w & 1:  # WALL_W → left edge of (row, col)
+        v_walls[row][col] = True
+      if w & 2:  # WALL_E → right edge of (row, col)
+        v_walls[row][col + 1] = True
+
+  # --- Convert exit to side string + position ---
+  _mask_to_side = {0x80: "N", 0x40: "S", 0x10: "W", 0x20: "E"}
+  exit_side = _mask_to_side.get(exit_mask, "?")
+  exit_pos = exit_col if exit_side in ("N", "S") else exit_row
+
+  # --- Entity positions (C byte order and coordinate transforms) ---
+  def read_entity() -> tuple[int, int]:
+    """Return (row, col) in the binary's coordinate system."""
     nonlocal pos
-    col, row = _decode_pos(data[pos])
+    b = data[pos]
     pos += 1
+    col_raw = b & 0x0F
+    row_raw = (b >> 4) & 0x0F
     if flip:
-      return (N - 1 - row, col)
-    return (col, row)
+      return (N - row_raw - 1, col_raw)
+    return (col_raw, row_raw)
 
   entities: list[Entity] = []
 
-  col, row = read_pos()
-  entities.append(Entity(EntityType.PLAYER, col, row))
+  erow, ecol = read_entity()
+  entities.append(Entity(EntityType.PLAYER, ecol, erow))
 
   for _ in range(header.mummy_count):
-    col, row = read_pos()
-    entities.append(Entity(EntityType.MUMMY, col, row))
+    erow, ecol = read_entity()
+    entities.append(Entity(EntityType.MUMMY, ecol, erow))
 
-  if header.key_gate > 0:
-    col, row = read_pos()
-    entities.append(Entity(EntityType.GATE, col, row))
-    col, row = read_pos()
-    entities.append(Entity(EntityType.KEY, col, row))
-
-  # File stores scorpion bytes before trap bytes
+  # Binary byte order: scorpion, traps, gate+key (NOT gate+key first)
   for _ in range(header.scorpion):
-    col, row = read_pos()
-    entities.append(Entity(EntityType.SCORPION, col, row))
+    erow, ecol = read_entity()
+    entities.append(Entity(EntityType.SCORPION, ecol, erow))
 
   for _ in range(header.trap_count):
-    col, row = read_pos()
-    entities.append(Entity(EntityType.TRAP, col, row))
+    erow, ecol = read_entity()
+    entities.append(Entity(EntityType.TRAP, ecol, erow))
+
+  if header.key_gate > 0:
+    erow, ecol = read_entity()
+    entities.append(Entity(EntityType.GATE, ecol, erow))
+    erow, ecol = read_entity()
+    entities.append(Entity(EntityType.KEY, ecol, erow))
 
   return SubLevel(
     h_walls=h_walls,
@@ -309,9 +359,9 @@ def render_maze(level: SubLevel, grid_size: int) -> str:
   for ent in level.entities:
     ch = _ENTITY_MARKERS.get(ent.type, "?")
     if ent.type == EntityType.GATE:
-      # Gate is a wall on the south edge of its cell
+      # Gate is a wall on the east edge of its cell
       if 0 <= ent.row < N and 0 <= ent.col < N:
-        grid[(ent.row + 1) * 2][ent.col * 2 + 1] = ch
+        grid[ent.row * 2 + 1][(ent.col + 1) * 2] = ch
     elif 0 <= ent.row < N and 0 <= ent.col < N:
       grid[ent.row * 2 + 1][ent.col * 2 + 1] = ch
 
